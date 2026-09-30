@@ -1,0 +1,1587 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>專案進度追蹤平台 - Firebase 即時多人共用版</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Material Icons -->
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
+  
+  <style>
+    :root {
+      font-size: 16pt;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Microsoft JhengHei", "Heiti TC", "黑體-繁", sans-serif;
+      background-color: #f8fafc;
+      color: #1e293b;
+      line-height: 1.5;
+    }
+    .transition-all-custom {
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    #toast-msg {
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+
+    /* 單一專案專屬列印隔離設定 */
+    @media print {
+      .no-print, header, nav, #view-dashboard > section:first-child, .tab-buttons-container {
+        display: none !important;
+      }
+      body {
+        background-color: #ffffff !important;
+        font-size: 12pt !important;
+      }
+      body.printing-single-project .project-card {
+        display: none !important;
+      }
+      body.printing-single-project .project-card.target-print-project {
+        display: block !important;
+        border: 1px solid #94a3b8 !important;
+        box-shadow: none !important;
+        break-inside: avoid;
+        margin: 0 !important;
+        padding: 1.5rem !important;
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased">
+
+  <!-- ================= 頂部導航列 (包含帳號登入狀態與雲端同步燈號) ================= -->
+  <header class="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm no-print">
+    <div class="w-full max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3 cursor-pointer" onclick="navigateToDashboard()">
+        <span class="material-icons-outlined text-blue-600 text-3xl">track_changes</span>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight text-slate-800 flex items-center gap-2">
+            專案進度追蹤平台
+            <span id="sync-status-badge" class="text-xs bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+              <span class="w-2 h-2 rounded-full bg-slate-400"></span> 離線演示模式
+            </span>
+          </h1>
+        </div>
+      </div>
+
+      <!-- 右側：Firebase 金鑰設定、白名單管理、團隊成員、登入帳號卡 -->
+      <div class="flex items-center flex-wrap gap-2">
+        <button onclick="openConfigModal()" class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-300 transition">
+          <span class="material-icons-outlined text-sm">cloud_sync</span>
+          Firebase 設定
+        </button>
+
+        <button id="whitelist-btn" onclick="openWhitelistModal()" class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition">
+          <span class="material-icons-outlined text-sm">verified_user</span>
+          共用人員信箱白名單
+        </button>
+
+        <button onclick="openMemberModal()" class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-300 transition">
+          <span class="material-icons-outlined text-sm">people</span>
+          負責人選單庫
+        </button>
+
+        <!-- 帳號登入/登出按鈕 -->
+        <div id="auth-actions" class="flex items-center gap-2 pl-2 border-l border-slate-200">
+          <button id="btn-login" onclick="handleAuthAction()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition">
+            <span class="material-icons-outlined text-sm">login</span>
+            <span id="btn-login-text">Google 登入</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ================= 未授權或未登入提示橫幅 ================= -->
+  <div id="auth-warning-banner" class="bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-center text-xs text-amber-800 font-medium no-print flex items-center justify-center gap-2">
+    <span class="material-icons-outlined text-amber-600 text-sm">info</span>
+    <span id="auth-warning-text">當前為本機模擬模式。若要多人即時同步，請點選右上角「Firebase 設定」填入專案金鑰，並使用授權公司信箱登入。</span>
+  </div>
+
+  <!-- ================= 主要內容區塊 ================= -->
+  <main class="flex-grow w-full max-w-7xl mx-auto p-4 md:p-6 space-y-6">
+
+    <!-- 1. 專案總覽 (Dashboard View) -->
+    <div id="view-dashboard" class="space-y-6">
+      
+      <!-- 頂部整體專案進度儀表板 (SVG 圓餅圖 100% 依子項目勾選自動動態計算，無滑桿) -->
+      <section class="bg-white rounded-2xl p-5 md:p-6 shadow-sm border border-slate-200">
+        <div class="flex flex-col md:flex-row items-center justify-between gap-6">
+          <div class="space-y-2 text-center md:text-left">
+            <span class="inline-block px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-xs font-semibold uppercase tracking-wider">即時雲端進度同步</span>
+            <h2 class="text-lg md:text-xl font-bold text-slate-900">整體專案完成度</h2>
+            <p class="text-sm text-slate-500 max-w-lg">
+              系統根據所有專案與工作內容底層之子項目勾選狀態即時換算；任何成員在任何裝置更新，所有人瀏覽器秒速同步。
+            </p>
+            <div class="pt-2 flex items-center justify-center md:justify-start gap-4 text-xs font-medium text-slate-600">
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-blue-600"></span>已勾選子項目</span>
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-slate-200"></span>未完成子項目</span>
+            </div>
+          </div>
+
+          <!-- 圓餅圖 (Donut Chart) -->
+          <div class="relative w-44 h-44 flex items-center justify-center shrink-0">
+            <svg class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="40" stroke="#e2e8f0" stroke-width="12" fill="transparent" />
+              <circle id="overall-circle" cx="50" cy="50" r="40" stroke="#2563eb" stroke-width="12" fill="transparent"
+                stroke-dasharray="251.2" stroke-dashoffset="251.2" stroke-linecap="round" class="transition-all-custom duration-500" />
+            </svg>
+            <div class="absolute flex flex-col items-center justify-center text-center">
+              <span id="overall-percent" class="text-2xl font-black text-slate-800">0%</span>
+              <span class="text-[11pt] font-medium text-slate-400">總體進度</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 專案一覽表頭與 Tab 切換 -->
+      <section class="space-y-4">
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 border-b border-slate-200 pb-3 tab-buttons-container">
+          <div class="flex gap-2">
+            <button onclick="setTab('active')" id="tab-active" class="px-4 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white shadow-sm transition-all flex items-center gap-2">
+              <span class="material-icons-outlined text-base">play_circle</span>
+              進行中專案 (<span id="count-active">0</span>)
+            </button>
+            <button onclick="setTab('closed')" id="tab-closed" class="px-4 py-2 rounded-xl text-sm font-semibold bg-white text-slate-600 hover:bg-slate-100 transition-all border border-slate-200 flex items-center gap-2">
+              <span class="material-icons-outlined text-base">check_circle</span>
+              已結案專案 (<span id="count-closed">0</span>)
+            </button>
+          </div>
+          <button onclick="addNewProject()" class="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-semibold shadow-sm transition-colors">
+            <span class="material-icons-outlined text-base">add</span>
+            新增專案
+          </button>
+        </div>
+
+        <!-- 專案清單動態載入區 -->
+        <div id="project-list" class="space-y-6"></div>
+      </section>
+
+    </div>
+
+    <!-- 2. 獨立工作內容檢視 (Dedicated Standalone Task View) -->
+    <div id="view-task" class="hidden space-y-6">
+      <nav class="flex items-center gap-2 text-sm text-slate-500 no-print">
+        <button onclick="navigateToDashboard()" class="hover:text-blue-600 font-medium flex items-center gap-1">
+          <span class="material-icons-outlined text-sm">arrow_back</span>
+          返回專案總覽
+        </button>
+        <span>/</span>
+        <span id="taskview-breadcrumb-project" class="text-slate-700 font-medium">所屬專案</span>
+        <span>/</span>
+        <span class="text-blue-600 font-semibold">工作細節獨立頁</span>
+      </nav>
+
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 space-y-6">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-indigo-50 text-indigo-700">獨立工作內容</span>
+              <span id="taskview-parent-info" class="text-xs text-slate-500">所屬專案資訊</span>
+            </div>
+            <h2 id="taskview-title" class="text-xl font-bold text-slate-900">工作項目名稱</h2>
+          </div>
+
+          <!-- 右側：所屬專案單獨匯出按鈕群與獨立進度環 -->
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="flex items-center gap-2 no-print">
+              <button id="taskview-export-csv-btn" class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition">
+                <span class="material-icons-outlined text-sm">file_download</span>
+                單獨匯出此專案 CSV
+              </button>
+              <button id="taskview-print-pdf-btn" class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg shadow-sm transition">
+                <span class="material-icons-outlined text-sm">print</span>
+                單獨列印此專案 PDF
+              </button>
+            </div>
+
+            <div class="flex items-center gap-3 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+              <div class="relative w-14 h-14 flex items-center justify-center shrink-0">
+                <svg class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                  <circle cx="50" cy="50" r="40" stroke="#cbd5e1" stroke-width="12" fill="transparent" />
+                  <circle id="taskview-circle" cx="50" cy="50" r="40" stroke="#2563eb" stroke-width="12" fill="transparent"
+                    stroke-dasharray="251.2" stroke-dashoffset="251.2" stroke-linecap="round" class="transition-all-custom duration-300" />
+                </svg>
+                <span id="taskview-percent-text" class="absolute text-xs font-bold text-slate-800">0%</span>
+              </div>
+              <div>
+                <p class="text-[11pt] text-slate-400 font-medium">子項目完成率</p>
+                <p id="taskview-count-text" class="text-sm font-bold text-slate-800">0 / 0 已完成</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 獨立子項目橫向流水排列區 -->
+        <div class="space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+              <span class="material-icons-outlined text-slate-500 text-lg">checklist</span>
+              子項目清單（橫式排列省空間）
+            </h3>
+            <span class="text-xs text-slate-400">勾選後全站進度與圓餅圖自動同步更新</span>
+          </div>
+
+          <div id="taskview-subtasks-container" class="flex flex-wrap items-center gap-2.5 p-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 min-h-[90px]">
+            <!-- 橫式子項目動態注入 -->
+          </div>
+
+          <div class="flex items-center gap-2 pt-2 no-print">
+            <input type="text" id="taskview-new-subtask-input" placeholder="輸入新增子項目名稱後按 Enter 或點擊新增..."
+              class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onkeydown="if(event.key === 'Enter') addSubtaskInTaskView()">
+            <button onclick="addSubtaskInTaskView()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition-colors flex items-center gap-1 shadow-sm">
+              <span class="material-icons-outlined text-sm">add</span>
+              新增子項目
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ================= 彈窗 1：期程日期選擇器 (Date Range Modal) ================= -->
+  <div id="modal-date" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm hidden flex items-center justify-center p-4 no-print">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+          <span class="material-icons-outlined text-blue-600">calendar_month</span>
+          設定專案持續期程
+        </h3>
+        <button onclick="closeDateModal()" class="text-slate-400 hover:text-slate-600">
+          <span class="material-icons-outlined">close</span>
+        </button>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">起始日期</label>
+          <input type="date" id="modal-date-start" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">完成日期 (結束日)</label>
+          <input type="date" id="modal-date-end" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <p class="text-xs text-slate-400">儲存後將嚴格轉換為 00/00 ~ 00/00 格式儲存與顯示。</p>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+        <button onclick="closeDateModal()" class="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg">取消</button>
+        <button onclick="saveDateModal()" class="px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm">確認套用</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 彈窗 2：共用人員信箱白名單管理 (Allowed Users White-list) ================= -->
+  <div id="modal-whitelist" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm hidden flex items-center justify-center p-4 no-print">
+    <div class="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div>
+          <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+            <span class="material-icons-outlined text-indigo-600">verified_user</span>
+            公司共用人員信箱白名單
+          </h3>
+          <p class="text-xs text-slate-400 mt-0.5">只有名單內且已登入之同仁，方可查看與修改專案資料。</p>
+        </div>
+        <button onclick="closeWhitelistModal()" class="text-slate-400 hover:text-slate-600">
+          <span class="material-icons-outlined">close</span>
+        </button>
+      </div>
+
+      <!-- 新增信箱輸入區 -->
+      <div class="flex gap-2">
+        <input type="email" id="modal-new-whitelist-email" placeholder="輸入同仁 Google 信箱 (如: colleague@company.com)..."
+          class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          onkeydown="if(event.key === 'Enter') addEmailToWhitelist()">
+        <button onclick="addEmailToWhitelist()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold shrink-0">
+          加入授權
+        </button>
+      </div>
+
+      <!-- 信箱白名單列表 (標示 td23460176@gmail.com 為預設最高管理信箱) -->
+      <div class="space-y-2 max-h-60 overflow-y-auto pr-1">
+        <p class="text-xs font-semibold text-slate-500">已授權存取人員信箱：</p>
+        <div id="modal-whitelist-container" class="space-y-1.5"></div>
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-100">
+        <button onclick="closeWhitelistModal()" class="px-4 py-2 text-sm font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg">完成關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 彈窗 3：負責人名單庫管理 (Member Management Modal) ================= -->
+  <div id="modal-member" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm hidden flex items-center justify-center p-4 no-print">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+          <span class="material-icons-outlined text-blue-600">manage_accounts</span>
+          管理負責人名單庫
+        </h3>
+        <button onclick="closeMemberModal()" class="text-slate-400 hover:text-slate-600">
+          <span class="material-icons-outlined">close</span>
+        </button>
+      </div>
+
+      <div class="flex gap-2">
+        <input type="text" id="modal-new-member-name" placeholder="輸入成員姓名..."
+          class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onkeydown="if(event.key === 'Enter') addMemberFromModal()">
+        <button onclick="addMemberFromModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold shrink-0">
+          新增成員
+        </button>
+      </div>
+
+      <div class="space-y-2 max-h-56 overflow-y-auto pr-1">
+        <p class="text-xs font-semibold text-slate-500">現有名單成員（點選垃圾桶可移除）：</p>
+        <div id="modal-member-list" class="space-y-1.5"></div>
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-100">
+        <button onclick="closeMemberModal()" class="px-4 py-2 text-sm font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg">完成關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 彈窗 4：Firebase 專案金鑰與雲端設定 ================= -->
+  <div id="modal-config" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm hidden flex items-center justify-center p-4 no-print">
+    <div class="bg-white rounded-2xl max-w-xl w-full p-6 shadow-xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+          <span class="material-icons-outlined text-blue-600">settings</span>
+          Firebase 雲端協作配置
+        </h3>
+        <button onclick="closeConfigModal()" class="text-slate-400 hover:text-slate-600">
+          <span class="material-icons-outlined">close</span>
+        </button>
+      </div>
+
+      <p class="text-xs text-slate-600">
+        填入您的 Firebase 專案配置資訊即可啟用全公司「毫秒級即時同步」與「Google 帳號驗證」。若未填寫，將在本地維持離線演示模式。
+      </p>
+
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Firebase Configuration (JSON 或 JavaScript 物件)</label>
+          <textarea id="firebase-config-input" rows="7" placeholder='{
+  "apiKey": "AIzaSy...",
+  "authDomain": "your-app.firebaseapp.com",
+  "projectId": "your-app",
+  "storageBucket": "your-app.appspot.com",
+  "messagingSenderId": "...",
+  "appId": "..."
+}' class="w-full font-mono text-xs bg-slate-50 border border-slate-300 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+        </div>
+
+        <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1.5">
+          <p class="font-bold text-slate-700">🔒 推薦的 Firestore 安全規則 (Security Rules)：</p>
+          <pre class="bg-slate-900 text-slate-100 p-2.5 rounded-lg overflow-x-auto text-[11px] leading-relaxed">
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /company_tracker/{document=**} {
+      // 僅允許經由本系統驗證、且在授權名單內的信箱讀寫
+      allow read, write: if request.auth != null;
+    }
+  }
+}</pre>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+        <button onclick="clearFirebaseConfig()" class="text-xs text-red-600 hover:underline">清除設定並回退離線模式</button>
+        <div class="flex gap-2">
+          <button onclick="closeConfigModal()" class="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg">取消</button>
+          <button onclick="saveFirebaseConfig()" class="px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm">保存並連線</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 浮動提示 Toast -->
+  <div id="toast-msg" class="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-lg text-sm font-medium opacity-0 pointer-events-none transform translate-y-3 no-print">
+    提示訊息
+  </div>
+
+  <!-- ================= 核心邏輯 Javascript (Firebase SDK 模組整合) ================= -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+    import { getFirestore, doc, onSnapshot, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+    // --- 全局狀態 ---
+    let firebaseApp = null;
+    let auth = null;
+    let db = null;
+    let unsubscribeSnapshot = null;
+    let currentUser = null;
+
+    // 最高管理員信箱 (預設公司共用信箱)
+    const PRIMARY_ADMIN_EMAIL = "td23460176@gmail.com";
+
+    // 授權白名單預設集
+    let allowedUsers = [PRIMARY_ADMIN_EMAIL];
+
+    // 團隊成員選單庫 (專案負責人預設全為「未指定」)
+    let teamMembers = ["王小明", "李小華", "陳大同", "林佩佩"];
+
+    // 專案初始資料庫 (日期嚴格 00/00~00/00，負責人為「未指定」)
+    let projects = [
+      {
+        id: "proj-1",
+        title: "企業官網多語系品牌重構專案",
+        duration: "04/01 ~ 06/30",
+        clientName: "張總監",
+        clientContact: "0912-345-678 / contact@brand.com",
+        status: "active",
+        owner: "未指定",
+        tasks: [
+          {
+            id: "task-1-1",
+            title: "UI/UX 響應式原型視覺設計",
+            subtasks: [
+              { id: "sub-1-1-1", title: "首頁高保真設計稿", completed: true },
+              { id: "sub-1-1-2", title: "多語系切換元件規格", completed: true },
+              { id: "sub-1-1-3", title: "手機版抽屜選單流動動態", completed: false }
+            ]
+          },
+          {
+            id: "task-1-2",
+            title: "前端版面與 API 資料串接",
+            subtasks: [
+              { id: "sub-1-2-1", title: "Tailwind 響應式架構設定", completed: true },
+              { id: "sub-1-2-2", title: "i18n 語系字典自動加載", completed: false }
+            ]
+          }
+        ]
+      },
+      {
+        id: "proj-2",
+        title: "智慧物聯網即時監控後台系統",
+        duration: "05/15 ~ 08/31",
+        clientName: "林經理",
+        clientContact: "02-2345-6789 #302",
+        status: "active",
+        owner: "未指定",
+        tasks: [
+          {
+            id: "task-2-1",
+            title: "核心微服務架構與資料庫",
+            subtasks: [
+              { id: "sub-2-1-1", title: "時序資料表結構優化", completed: false },
+              { id: "sub-2-1-2", title: "MQTT 訊息佇列部署", completed: false }
+            ]
+          }
+        ]
+      },
+      {
+        id: "proj-3",
+        title: "第一期會員忠誠度回饋活動系統",
+        duration: "01/10 ~ 03/20",
+        clientName: "柯行銷長",
+        clientContact: "k_marketing@retail.tw",
+        status: "closed",
+        owner: "未指定",
+        tasks: [
+          {
+            id: "task-3-1",
+            title: "紅利點數清算與發放模組",
+            subtasks: [
+              { id: "sub-3-1-1", title: "雙重交易檢核邏輯", completed: true },
+              { id: "sub-3-1-2", title: "上線測試驗收與結案報告", completed: true }
+            ]
+          }
+        ]
+      }
+    ];
+
+    let currentTab = "active";
+    let activeDatePickerProjectId = null;
+    let currentStandaloneTaskId = null;
+    let currentStandaloneProjectId = null;
+
+    // --- Firebase 初始化與即時資料流 (onSnapshot) ---
+    function initFirebase() {
+      const config = {
+        apiKey: "AIzaSyDFH7480VvBn-dej4F5fKxpy3Kl3K815H0",
+        authDomain: "project-tracker-267bf.firebaseapp.com",
+        databaseURL: "https://project-tracker-267bf-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "project-tracker-267bf",
+        storageBucket: "project-tracker-267bf.firebasestorage.app",
+        messagingSenderId: "834178508495",
+        appId: "1:834178508495:web:ae348089322b8f65c3b9ba",
+        measurementId: "G-VWSVW0XN0V"
+      };
+
+      try {
+        firebaseApp = initializeApp(config);
+        auth = getAuth(firebaseApp);
+        db = getFirestore(firebaseApp);
+
+        // 監聽身分驗證變化
+        onAuthStateChanged(auth, (user) => {
+          currentUser = user;
+          updateAuthUI(user);
+
+          if (user) {
+            // 檢查是否具有授權 (若名單剛讀取中，先驗證是否為 td23460176@gmail.com 或已存於白名單)
+            const isAuthorized = user.email === PRIMARY_ADMIN_EMAIL || allowedUsers.includes(user.email);
+            if (!isAuthorized) {
+              showToast("您的帳號尚未被列入共用信箱白名單！");
+              updateBanner(false, `帳號 ${user.email} 尚未獲得存取授權，請聯繫管理員 (${PRIMARY_ADMIN_EMAIL}) 新增您的信箱。`);
+            } else {
+              updateBanner(true, `已作為授權成員登入：${user.email}，即時同步啟動中。`);
+            }
+            bindFirestoreSync();
+          } else {
+            if (unsubscribeSnapshot) unsubscribeSnapshot();
+            updateBanner(false, "已登出。請登入已授權的公司信箱以查看即時專案進度。");
+          }
+        });
+
+      } catch (err) {
+        console.error("Firebase 初始化失敗:", err);
+        setOfflineModeUI("Firebase 設定有誤");
+      }
+    }
+
+    function bindFirestoreSync() {
+      if (!db || !currentUser) return;
+
+      const docRef = doc(db, "company_tracker", "main_data");
+      
+      // onSnapshot 即時推播監聽：毫秒級多裝置同步
+      unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.projects) projects = data.projects;
+          if (data.teamMembers) teamMembers = data.teamMembers;
+          if (data.allowedUsers) allowedUsers = data.allowedUsers;
+          
+          // 確保管理員信箱必然在名單內
+          if (!allowedUsers.includes(PRIMARY_ADMIN_EMAIL)) {
+            allowedUsers.unshift(PRIMARY_ADMIN_EMAIL);
+          }
+
+          setOnlineModeUI();
+          render();
+          if (window.location.hash.startsWith("#/task/")) {
+            handleHashRouting();
+          }
+        } else {
+          // 首次無資料時建立初始資料
+          pushToCloud();
+        }
+      }, (error) => {
+        console.error("Firestore 監聽失敗 (可能是權限不足):", error);
+        showToast("同步失敗：請確認信箱是否已在授權白名單內");
+      });
+    }
+
+    // 將資料同步寫入雲端
+    async function pushToCloud() {
+      if (!db || !currentUser) {
+        // 離線模式存本機
+        saveLocal();
+        return;
+      }
+      try {
+        const docRef = doc(db, "company_tracker", "main_data");
+        await setDoc(docRef, {
+          projects,
+          teamMembers,
+          allowedUsers,
+          lastUpdated: new Date().toISOString(),
+          updatedBy: currentUser.email
+        });
+      } catch (e) {
+        console.error("寫入雲端失敗:", e);
+        showToast("雲端存檔失敗，請確認安全規則與連線");
+      }
+    }
+
+    function saveLocal() {
+      try {
+        localStorage.setItem("PT_PROJECTS_CACHE", JSON.stringify(projects));
+        localStorage.setItem("PT_MEMBERS_CACHE", JSON.stringify(teamMembers));
+        localStorage.setItem("PT_WHITELIST_CACHE", JSON.stringify(allowedUsers));
+      } catch (e) {}
+    }
+
+    function loadLocal() {
+      try {
+        const p = localStorage.getItem("PT_PROJECTS_CACHE");
+        const m = localStorage.getItem("PT_MEMBERS_CACHE");
+        const w = localStorage.getItem("PT_WHITELIST_CACHE");
+        if (p) projects = JSON.parse(p);
+        if (m) teamMembers = JSON.parse(m);
+        if (w) allowedUsers = JSON.parse(w);
+      } catch (e) {}
+    }
+
+    // --- 介面狀態更新 ---
+    function setOnlineModeUI() {
+      const badge = document.getElementById("sync-status-badge");
+      badge.className = "text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full flex items-center gap-1";
+      badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> 雲端即時多人連線`;
+    }
+
+    function setOfflineModeUI(msg = "離線演示模式") {
+      const badge = document.getElementById("sync-status-badge");
+      badge.className = "text-xs bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded-full flex items-center gap-1";
+      badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400"></span> ${msg}`;
+    }
+
+    function updateBanner(isOk, message) {
+      const banner = document.getElementById("auth-warning-banner");
+      const text = document.getElementById("auth-warning-text");
+      text.innerText = message;
+      if (isOk) {
+        banner.className = "bg-emerald-50 border-b border-emerald-200 px-4 py-2 text-center text-xs text-emerald-800 font-medium no-print flex items-center justify-center gap-2";
+      } else {
+        banner.className = "bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-xs text-amber-800 font-medium no-print flex items-center justify-center gap-2";
+      }
+    }
+
+    function updateAuthUI(user) {
+      const btn = document.getElementById("btn-login");
+      const btnText = document.getElementById("btn-login-text");
+      if (user) {
+        btnText.innerText = `登出 (${user.email.split('@')[0]})`;
+        btn.className = "inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-300 transition";
+      } else {
+        btnText.innerText = "Google 登入";
+        btn.className = "inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition";
+      }
+    }
+
+    // --- 授權驗證防護檢查 ---
+    function checkPermission() {
+      // 離線演示模式允許直接測試
+      if (!auth) return true;
+      if (!currentUser) {
+        showToast("請先點選右上角進行 Google 登入！");
+        return false;
+      }
+      if (currentUser.email !== PRIMARY_ADMIN_EMAIL && !allowedUsers.includes(currentUser.email)) {
+        showToast("權限不足：您的信箱不在白名單內，無法進行編輯操作！");
+        return false;
+      }
+      return true;
+    }
+
+    // --- 計算輔助函式 (100% 依子項目自動換算) ---
+    function calculateTaskProgress(task) {
+      if (!task.subtasks || task.subtasks.length === 0) return 0;
+      const doneCount = task.subtasks.filter(s => s.completed).length;
+      return Math.round((doneCount / task.subtasks.length) * 100);
+    }
+
+    function calculateProjectProgress(project) {
+      let totalSub = 0;
+      let completedSub = 0;
+      project.tasks.forEach(t => {
+        (t.subtasks || []).forEach(s => {
+          totalSub++;
+          if (s.completed) completedSub++;
+        });
+      });
+      if (totalSub === 0) return 0;
+      return Math.round((completedSub / totalSub) * 100);
+    }
+
+    function calculateOverallProgress() {
+      let totalSub = 0;
+      let completedSub = 0;
+      projects.forEach(p => {
+        p.tasks.forEach(t => {
+          (t.subtasks || []).forEach(s => {
+            totalSub++;
+            if (s.completed) completedSub++;
+          });
+        });
+      });
+      if (totalSub === 0) return 0;
+      return Math.round((completedSub / totalSub) * 100);
+    }
+
+    // --- 全局畫面渲染 ---
+    function render() {
+      // 1. 頂部圓餅圖 (Donut Chart)
+      const overall = calculateOverallProgress();
+      const circle = document.getElementById("overall-circle");
+      const percentText = document.getElementById("overall-percent");
+      const circumference = 251.2;
+      const offset = circumference - (overall / 100) * circumference;
+      circle.style.strokeDashoffset = offset;
+      percentText.innerText = `${overall}%`;
+
+      // 2. Tab 計數
+      const activeProjects = projects.filter(p => p.status === 'active');
+      const closedProjects = projects.filter(p => p.status === 'closed');
+      document.getElementById("count-active").innerText = activeProjects.length;
+      document.getElementById("count-closed").innerText = closedProjects.length;
+
+      // 3. 渲染符合當前 Tab 的專案列表
+      const displayProjects = currentTab === 'active' ? activeProjects : closedProjects;
+      const container = document.getElementById("project-list");
+      container.innerHTML = "";
+
+      if (displayProjects.length === 0) {
+        container.innerHTML = `
+          <div class="text-center py-12 bg-white rounded-2xl border border-slate-200 text-slate-400">
+            <span class="material-icons-outlined text-4xl mb-2">folder_off</span>
+            <p class="text-sm">目前此分類尚無任何專案</p>
+          </div>
+        `;
+        return;
+      }
+
+      displayProjects.forEach(proj => {
+        const progress = calculateProjectProgress(proj);
+        const card = document.createElement("div");
+        card.id = `project-card-${proj.id}`;
+        card.className = "project-card bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden transition-all-custom hover:border-slate-300";
+
+        // 負責人選單 Options
+        let ownerOptions = `<option value="未指定" ${proj.owner === '未指定' ? 'selected' : ''}>未指定</option>`;
+        teamMembers.forEach(mem => {
+          ownerOptions += `<option value="${mem}" ${proj.owner === mem ? 'selected' : ''}>${mem}</option>`;
+        });
+        ownerOptions += `<option value="__MANAGE__" class="text-blue-600 font-semibold bg-slate-50">⚙️️ 管理/增減名單...</option>`;
+
+        card.innerHTML = `
+          <!-- 專案頂部資訊區 -->
+          <div class="p-5 border-b border-slate-100 bg-slate-50/50">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div class="space-y-1.5 flex-1">
+                <div class="flex items-center gap-2">
+                  <input type="text" value="${escapeHtml(proj.title)}" onchange="window.updateProjectTitle('${proj.id}', this.value)"
+                    class="font-bold text-lg text-slate-900 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-500 focus:bg-white px-1 py-0.5 rounded outline-none w-full md:w-auto transition-colors" title="點擊修改專案名稱">
+                </div>
+
+                <!-- 資訊列：期程(00/00~00/00)、客戶、負責人(下拉選單) -->
+                <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-600 pt-1">
+                  
+                  <!-- 期程選取器按鈕 -->
+                  <div class="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-lg border border-slate-200 cursor-pointer hover:border-blue-400 hover:text-blue-600 transition-colors shadow-2xs"
+                    onclick="window.openDateModal('${proj.id}')" title="點選彈出視窗設定起始日與完成日">
+                    <span class="material-icons-outlined text-sm text-slate-400">calendar_today</span>
+                    <span>期程：<strong class="font-bold text-slate-800">${proj.duration}</strong></span>
+                    <span class="material-icons-outlined text-xs text-slate-400 no-print">edit_calendar</span>
+                  </div>
+
+                  <!-- 負責人下拉式選單 -->
+                  <div class="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
+                    <span class="material-icons-outlined text-sm text-slate-400">person</span>
+                    <span>負責人：</span>
+                    <select onchange="window.handleOwnerSelectChange('${proj.id}', this)"
+                      class="font-semibold text-slate-800 bg-transparent outline-none cursor-pointer hover:text-blue-600">
+                      ${ownerOptions}
+                    </select>
+                  </div>
+
+                  <!-- 客戶聯絡人與方式 -->
+                  <div class="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
+                    <span class="material-icons-outlined text-sm text-slate-400">business</span>
+                    <span>客戶：</span>
+                    <input type="text" value="${escapeHtml(proj.clientName)}" onchange="window.updateClientName('${proj.id}', this.value)"
+                      class="w-16 bg-transparent border-b border-dashed border-slate-300 px-0.5 text-slate-800 font-medium" placeholder="姓名">
+                    <span class="text-slate-300">|</span>
+                    <input type="text" value="${escapeHtml(proj.clientContact)}" onchange="window.updateClientContact('${proj.id}', this.value)"
+                      class="w-40 bg-transparent border-b border-dashed border-slate-300 px-0.5 text-slate-800" placeholder="電話 / 信箱">
+                  </div>
+
+                </div>
+              </div>
+
+              <!-- 右側：專案狀態與單一專案獨立匯出按鈕群 -->
+              <div class="flex flex-col md:items-end gap-2.5 shrink-0">
+                <div class="flex items-center gap-3">
+                  <select onchange="window.changeProjectStatus('${proj.id}', this.value)" 
+                    class="text-xs font-bold px-3 py-1.5 rounded-lg border cursor-pointer outline-none ${proj.status === 'active' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-300'}">
+                    <option value="active" ${proj.status === 'active' ? 'selected' : ''}>● 進行中</option>
+                    <option value="closed" ${proj.status === 'closed' ? 'selected' : ''}>✓ 已結案</option>
+                  </select>
+
+                  <div class="text-right min-w-[70px]">
+                    <span class="text-xs text-slate-400 block font-medium">達成率</span>
+                    <span class="text-base font-extrabold text-blue-600">${progress}%</span>
+                  </div>
+                </div>
+
+                <!-- 單一專案獨立匯出操作 (不與其他專案合併) -->
+                <div class="flex items-center gap-2 no-print">
+                  <button onclick="window.exportSingleProjectCSV('${proj.id}')" 
+                          class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg shadow-2xs transition"
+                          title="僅匯出此專案為單一 CSV 檔案">
+                    <span class="material-icons-outlined text-sm">file_download</span>
+                    匯出 CSV
+                  </button>
+                  <button onclick="window.printSingleProjectPDF('${proj.id}')" 
+                          class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg shadow-2xs transition"
+                          title="僅列印/儲存此專案為獨立單頁 PDF">
+                    <span class="material-icons-outlined text-sm">print</span>
+                    列印/PDF
+                  </button>
+                  <button onclick="window.deleteProject('${proj.id}')" class="text-slate-300 hover:text-red-500 p-1" title="刪除專案">
+                    <span class="material-icons-outlined text-base">delete</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 專案總體進度條 (依子項目自動換算) -->
+            <div class="w-full bg-slate-200 h-2 rounded-full overflow-hidden mt-3">
+              <div class="bg-blue-600 h-full transition-all duration-300" style="width: ${progress}%"></div>
+            </div>
+          </div>
+
+          <!-- 工作項目容器 (Tasks) -->
+          <div class="p-5 space-y-4">
+            <div class="flex items-center justify-between">
+              <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">專案工作項目與子任務</h4>
+              <button onclick="window.addNewTask('${proj.id}')" class="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 hover:underline no-print">
+                <span class="material-icons-outlined text-sm">add_task</span>
+                新增工作內容
+              </button>
+            </div>
+
+            <div class="space-y-3">
+              ${renderProjectTasks(proj)}
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function renderProjectTasks(project) {
+      if (!project.tasks || project.tasks.length === 0) {
+        return `<p class="text-xs text-slate-400 italic py-2">尚未新增工作項目，請點擊上方按鈕建立。</p>`;
+      }
+
+      return project.tasks.map(task => {
+        const taskProgress = calculateTaskProgress(task);
+        const doneCount = (task.subtasks || []).filter(s => s.completed).length;
+        const totalCount = (task.subtasks || []).length;
+
+        // 子項目橫向排列（flex-wrap 晶片標籤節省版面高度）
+        const subtasksChips = (task.subtasks || []).map(sub => `
+          <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border cursor-pointer select-none transition-colors ${sub.completed ? 'bg-emerald-50 text-emerald-800 border-emerald-200 line-through opacity-80' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}">
+            <input type="checkbox" ${sub.completed ? 'checked' : ''} onchange="window.toggleSubtask('${project.id}', '${task.id}', '${sub.id}')" class="w-3.5 h-3.5 text-blue-600 rounded">
+            <span>${escapeHtml(sub.title)}</span>
+            <button onclick="event.preventDefault(); event.stopPropagation(); window.deleteSubtask('${project.id}', '${task.id}', '${sub.id}')" class="text-slate-300 hover:text-red-500 ml-0.5 no-print" title="刪除子項">
+              <span class="material-icons-outlined text-xs">close</span>
+            </button>
+          </label>
+        `).join("");
+
+        return `
+          <div class="border border-slate-200 rounded-xl p-3.5 bg-white space-y-2.5">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div class="flex items-center gap-2 flex-1">
+                <span class="material-icons-outlined text-slate-400 text-sm">assignment</span>
+                <input type="text" value="${escapeHtml(task.title)}" onchange="window.updateTaskTitle('${project.id}', '${task.id}', this.value)"
+                  class="font-semibold text-sm text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:bg-slate-50 px-1 py-0.5 rounded outline-none flex-1">
+              </div>
+
+              <!-- 右側：完成度徽章、獨立網頁檢視按鈕、刪除按鈕 -->
+              <div class="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                <span class="text-xs px-2 py-0.5 rounded-full font-bold ${taskProgress === 100 ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-50 text-blue-700'}">
+                  ${doneCount}/${totalCount} (${taskProgress}%)
+                </span>
+                
+                <button onclick="window.openStandaloneTaskView('${project.id}', '${task.id}')" 
+                  class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md transition-colors no-print" title="開啟獨立工作內容網頁查看完整子項目">
+                  <span class="material-icons-outlined text-xs">open_in_new</span>
+                  獨立頁面
+                </button>
+
+                <button onclick="window.deleteTask('${project.id}', '${task.id}')" class="text-slate-300 hover:text-red-500 p-0.5 no-print" title="刪除工作內容">
+                  <span class="material-icons-outlined text-sm">delete_outline</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 橫式子項目群 (flex-wrap) -->
+            <div class="flex flex-wrap items-center gap-1.5 pt-1">
+              ${subtasksChips}
+              
+              <button onclick="window.promptAddSubtask('${project.id}', '${task.id}')" 
+                class="inline-flex items-center gap-0.5 px-2 py-1 rounded-lg text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-dashed border-blue-200 transition-colors no-print">
+                <span class="material-icons-outlined text-xs">add</span>
+                加子項目
+              </button>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    // --- 獨立工作內容檢視邏輯 ---
+    function openStandaloneTaskView(projectId, taskId) {
+      window.location.hash = `#/task/${projectId}/${taskId}`;
+    }
+
+    function navigateToDashboard() {
+      window.location.hash = "";
+    }
+
+    function handleHashRouting() {
+      const hash = window.location.hash;
+      if (hash.startsWith("#/task/")) {
+        const parts = hash.replace("#/task/", "").split("/");
+        if (parts.length === 2) {
+          showTaskDetailView(parts[0], parts[1]);
+          return;
+        }
+      }
+      document.getElementById("view-dashboard").classList.remove("hidden");
+      document.getElementById("view-task").classList.add("hidden");
+      currentStandaloneTaskId = null;
+      currentStandaloneProjectId = null;
+      render();
+    }
+
+    function showTaskDetailView(projectId, taskId) {
+      const project = projects.find(p => p.id === projectId);
+      if (!project) return navigateToDashboard();
+      const task = project.tasks.find(t => t.id === taskId);
+      if (!task) return navigateToDashboard();
+
+      currentStandaloneProjectId = projectId;
+      currentStandaloneTaskId = taskId;
+
+      document.getElementById("view-dashboard").classList.add("hidden");
+      document.getElementById("view-task").classList.remove("hidden");
+
+      document.getElementById("taskview-breadcrumb-project").innerText = project.title;
+      document.getElementById("taskview-title").innerText = task.title;
+      document.getElementById("taskview-parent-info").innerText = `專案：${project.title} | 期程：${project.duration} | 負責人：${project.owner}`;
+
+      const csvBtn = document.getElementById("taskview-export-csv-btn");
+      const pdfBtn = document.getElementById("taskview-print-pdf-btn");
+      csvBtn.onclick = () => window.exportSingleProjectCSV(projectId);
+      pdfBtn.onclick = () => window.printSingleProjectPDF(projectId);
+
+      renderTaskViewSubtasks(project, task);
+    }
+
+    function renderTaskViewSubtasks(project, task) {
+      const progress = calculateTaskProgress(task);
+      const doneCount = (task.subtasks || []).filter(s => s.completed).length;
+      const totalCount = (task.subtasks || []).length;
+
+      const circle = document.getElementById("taskview-circle");
+      const circumference = 251.2;
+      circle.style.strokeDashoffset = circumference - (progress / 100) * circumference;
+      document.getElementById("taskview-percent-text").innerText = `${progress}%`;
+      document.getElementById("taskview-count-text").innerText = `${doneCount} / ${totalCount} 已完成`;
+
+      const container = document.getElementById("taskview-subtasks-container");
+      container.innerHTML = "";
+
+      if (!task.subtasks || task.subtasks.length === 0) {
+        container.innerHTML = `<span class="text-xs text-slate-400 italic">尚無任何子項目，請於下方新增</span>`;
+        return;
+      }
+
+      task.subtasks.forEach(sub => {
+        const chip = document.createElement("label");
+        chip.className = `inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer select-none transition-all shadow-2xs ${sub.completed ? 'bg-emerald-50 text-emerald-800 border-emerald-300 line-through opacity-85' : 'bg-white text-slate-800 border-slate-300 hover:border-blue-400'}`;
+        chip.innerHTML = `
+          <input type="checkbox" ${sub.completed ? 'checked' : ''} onchange="window.toggleSubtaskInTaskView('${sub.id}')" class="w-4 h-4 text-blue-600 rounded">
+          <span>${escapeHtml(sub.title)}</span>
+          <button onclick="event.preventDefault(); event.stopPropagation(); window.deleteSubtaskInTaskView('${sub.id}')" class="text-slate-300 hover:text-red-500 ml-1 no-print">
+            <span class="material-icons-outlined text-sm">cancel</span>
+          </button>
+        `;
+        container.appendChild(chip);
+      });
+    }
+
+    // --- 單一專案獨立匯出 ---
+    function exportSingleProjectCSV(projectId) {
+      const proj = projects.find(p => p.id === projectId);
+      if (!proj) return;
+
+      const projProgress = calculateProjectProgress(proj);
+      const statusText = proj.status === 'active' ? '進行中' : '已結案';
+      const cleanProjTitle = proj.title.replace(/[\/\\?%*:|"<>]/g, '_');
+      const today = new Date().toISOString().slice(0, 10);
+
+      let csv = "\uFEFF"; // UTF-8 BOM
+      csv += "專案名稱,專案期程,狀態,負責人,客戶名稱,客戶聯絡方式,專案總達成率,工作內容名稱,工作項達成率,子項目名稱,子項目狀態\n";
+
+      if (!proj.tasks || proj.tasks.length === 0) {
+        csv += `"${proj.title}","${proj.duration}","${statusText}","${proj.owner}","${proj.clientName}","${proj.clientContact}","${projProgress}%","無","0%","無","無"\n`;
+      } else {
+        proj.tasks.forEach(t => {
+          const taskProgress = calculateTaskProgress(t);
+          if (!t.subtasks || t.subtasks.length === 0) {
+            csv += `"${proj.title}","${proj.duration}","${statusText}","${proj.owner}","${proj.clientName}","${proj.clientContact}","${projProgress}%","${t.title}","${taskProgress}%","無","無"\n`;
+          } else {
+            t.subtasks.forEach(s => {
+              const subStatus = s.completed ? "已完成" : "未完成";
+              csv += `"${proj.title}","${proj.duration}","${statusText}","${proj.owner}","${proj.clientName}","${proj.clientContact}","${projProgress}%","${t.title}","${taskProgress}%","${s.title}","${subStatus}"\n`;
+            });
+          }
+        });
+      }
+
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `專案進度報表_${cleanProjTitle}_${today}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      showToast(`已單獨匯出「${proj.title}」專案 CSV`);
+    }
+
+    function printSingleProjectPDF(projectId) {
+      const proj = projects.find(p => p.id === projectId);
+      if (!proj) return;
+
+      const targetCard = document.getElementById(`project-card-${projectId}`);
+      if (!targetCard) return;
+
+      document.body.classList.add("printing-single-project");
+      targetCard.classList.add("target-print-project");
+
+      const originalTitle = document.title;
+      const cleanProjTitle = proj.title.replace(/[\/\\?%*:|"<>]/g, '_');
+      const today = new Date().toISOString().slice(0, 10);
+      document.title = `專案進度報表_${cleanProjTitle}_${today}`;
+
+      window.print();
+
+      setTimeout(() => {
+        document.body.classList.remove("printing-single-project");
+        targetCard.classList.remove("target-print-project");
+        document.title = originalTitle;
+      }, 500);
+    }
+
+    // --- 資料操作方法 (加上雲端即時同步 pushToCloud 與白名單授權防護) ---
+    window.toggleSubtask = function(projId, taskId, subId) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === projId);
+      if (!p) return;
+      const t = p.tasks.find(item => item.id === taskId);
+      if (!t) return;
+      const s = t.subtasks.find(item => item.id === subId);
+      if (s) {
+        s.completed = !s.completed;
+        render();
+        pushToCloud();
+      }
+    };
+
+    window.toggleSubtaskInTaskView = function(subtaskId) {
+      if (!checkPermission()) return;
+      const project = projects.find(p => p.id === currentStandaloneProjectId);
+      if (!project) return;
+      const task = project.tasks.find(t => t.id === currentStandaloneTaskId);
+      if (!task) return;
+      const sub = task.subtasks.find(s => s.id === subtaskId);
+      if (sub) {
+        sub.completed = !sub.completed;
+        renderTaskViewSubtasks(project, task);
+        render();
+        pushToCloud();
+      }
+    };
+
+    window.addSubtaskInTaskView = function() {
+      if (!checkPermission()) return;
+      const input = document.getElementById("taskview-new-subtask-input");
+      const title = input.value.trim();
+      if (!title) return;
+      const project = projects.find(p => p.id === currentStandaloneProjectId);
+      if (!project) return;
+      const task = project.tasks.find(t => t.id === currentStandaloneTaskId);
+      if (!task) return;
+
+      task.subtasks = task.subtasks || [];
+      task.subtasks.push({
+        id: `sub-${Date.now()}`,
+        title: title,
+        completed: false
+      });
+      input.value = "";
+      renderTaskViewSubtasks(project, task);
+      render();
+      pushToCloud();
+    };
+
+    window.deleteSubtaskInTaskView = function(subtaskId) {
+      if (!checkPermission()) return;
+      const project = projects.find(p => p.id === currentStandaloneProjectId);
+      if (!project) return;
+      const task = project.tasks.find(t => t.id === currentStandaloneTaskId);
+      if (!task) return;
+      task.subtasks = task.subtasks.filter(s => s.id !== subtaskId);
+      renderTaskViewSubtasks(project, task);
+      render();
+      pushToCloud();
+    };
+
+    window.promptAddSubtask = function(projId, taskId) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === projId);
+      if (!p) return;
+      const t = p.tasks.find(item => item.id === taskId);
+      if (!t) return;
+      const subTitle = prompt("請輸入子項目名稱：");
+      if (!subTitle) return;
+      t.subtasks.push({
+        id: `sub-${Date.now()}`,
+        title: subTitle.trim(),
+        completed: false
+      });
+      render();
+      pushToCloud();
+    };
+
+    window.deleteSubtask = function(projId, taskId, subId) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === projId);
+      if (!p) return;
+      const t = p.tasks.find(item => item.id === taskId);
+      if (!t) return;
+      t.subtasks = t.subtasks.filter(item => item.id !== subId);
+      render();
+      pushToCloud();
+    };
+
+    window.addNewTask = function(projectId) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === projectId);
+      if (!p) return;
+      const title = prompt("請輸入新增主要工作內容名稱：", "主要工作內容");
+      if (!title) return;
+      p.tasks.push({
+        id: `task-${Date.now()}`,
+        title: title.trim(),
+        subtasks: []
+      });
+      render();
+      pushToCloud();
+    };
+
+    window.updateTaskTitle = function(projId, taskId, val) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === projId);
+      if (!p) return;
+      const t = p.tasks.find(item => item.id === taskId);
+      if (t) {
+        t.title = val || "工作項目";
+        pushToCloud();
+      }
+    };
+
+    window.deleteTask = function(projId, taskId) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === projId);
+      if (!p) return;
+      p.tasks = p.tasks.filter(item => item.id !== taskId);
+      render();
+      pushToCloud();
+    };
+
+    window.addNewProject = function() {
+      if (!checkPermission()) return;
+      const newProj = {
+        id: `proj-${Date.now()}`,
+        title: "新建立專案項目",
+        duration: "01/01 ~ 06/30",
+        clientName: "聯絡人",
+        clientContact: "聯絡電話/信箱",
+        status: "active",
+        owner: "未指定",
+        tasks: []
+      };
+      projects.unshift(newProj);
+      if (currentTab !== 'active') setTab('active');
+      else render();
+      pushToCloud();
+      showToast("已建立新專案並同步至雲端");
+    };
+
+    window.deleteProject = function(id) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === id);
+      if (!p) return;
+      const verify = prompt(`確認要刪除專案「${p.title}」嗎？若要刪除請輸入 "YES"：`);
+      if (verify === "YES" || verify === "yes") {
+        projects = projects.filter(item => item.id !== id);
+        render();
+        pushToCloud();
+        showToast("已刪除專案");
+      }
+    };
+
+    window.updateProjectTitle = function(id, val) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === id);
+      if (p) {
+        p.title = val || "未命名專案";
+        pushToCloud();
+      }
+    };
+
+    window.updateClientName = function(id, val) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === id);
+      if (p) {
+        p.clientName = val;
+        pushToCloud();
+      }
+    };
+
+    window.updateClientContact = function(id, val) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === id);
+      if (p) {
+        p.clientContact = val;
+        pushToCloud();
+      }
+    };
+
+    window.changeProjectStatus = function(id, newStatus) {
+      if (!checkPermission()) return;
+      const p = projects.find(item => item.id === id);
+      if (p) {
+        p.status = newStatus;
+        render();
+        pushToCloud();
+        showToast(`專案狀態已變更為「${newStatus === 'active' ? '進行中' : '已結案'}」`);
+      }
+    };
+
+    window.handleOwnerSelectChange = function(projId, selectElem) {
+      if (selectElem.value === '__MANAGE__') {
+        openMemberModal();
+        render();
+        return;
+      }
+      if (!checkPermission()) {
+        render();
+        return;
+      }
+      const project = projects.find(p => p.id === projId);
+      if (project) {
+        project.owner = selectElem.value;
+        pushToCloud();
+      }
+    };
+
+    // --- 日期選擇器彈窗 ---
+    window.openDateModal = function(projId) {
+      activeDatePickerProjectId = projId;
+      const proj = projects.find(p => p.id === projId);
+      if (!proj) return;
+
+      const currentYear = new Date().getFullYear();
+      let startVal = `${currentYear}-01-01`;
+      let endVal = `${currentYear}-06-30`;
+
+      if (proj.duration && proj.duration.includes("~")) {
+        const parts = proj.duration.split("~").map(s => s.trim());
+        if (parts[0] && parts[0].includes("/")) {
+          const [m, d] = parts[0].split("/");
+          startVal = `${currentYear}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+        }
+        if (parts[1] && parts[1].includes("/")) {
+          const [m, d] = parts[1].split("/");
+          endVal = `${currentYear}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+        }
+      }
+
+      document.getElementById("modal-date-start").value = startVal;
+      document.getElementById("modal-date-end").value = endVal;
+      document.getElementById("modal-date").classList.remove("hidden");
+    };
+
+    window.closeDateModal = function() {
+      activeDatePickerProjectId = null;
+      document.getElementById("modal-date").classList.add("hidden");
+    };
+
+    window.saveDateModal = function() {
+      if (!checkPermission()) return;
+      if (!activeDatePickerProjectId) return;
+      const proj = projects.find(p => p.id === activeDatePickerProjectId);
+      if (!proj) return;
+
+      const startRaw = document.getElementById("modal-date-start").value;
+      const endRaw = document.getElementById("modal-date-end").value;
+
+      if (!startRaw || !endRaw) {
+        showToast("請完整選取起始日與完成日！");
+        return;
+      }
+
+      const formatDatePart = (isoStr) => {
+        const d = new Date(isoStr);
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${mm}/${dd}`;
+      };
+
+      proj.duration = `${formatDatePart(startRaw)} ~ ${formatDatePart(endRaw)}`;
+      closeDateModal();
+      render();
+      pushToCloud();
+      showToast(`專案期程已更新為 ${proj.duration}`);
+    };
+
+    // --- 白名單管理邏輯 ---
+    window.openWhitelistModal = function() {
+      renderWhitelistContainer();
+      document.getElementById("modal-whitelist").classList.remove("hidden");
+    };
+
+    window.closeWhitelistModal = function() {
+      document.getElementById("modal-whitelist").classList.add("hidden");
+    };
+
+    function renderWhitelistContainer() {
+      const container = document.getElementById("modal-whitelist-container");
+      container.innerHTML = "";
+
+      // 確保 td23460176@gmail.com 永遠在名單第一位
+      if (!allowedUsers.includes(PRIMARY_ADMIN_EMAIL)) {
+        allowedUsers.unshift(PRIMARY_ADMIN_EMAIL);
+      }
+
+      allowedUsers.forEach((email) => {
+        const isMaster = (email === PRIMARY_ADMIN_EMAIL);
+        const item = document.createElement("div");
+        item.className = "flex items-center justify-between px-3 py-2 bg-slate-50 rounded-lg text-xs font-semibold text-slate-700";
+        item.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="material-icons-outlined text-sm ${isMaster ? 'text-indigo-600' : 'text-slate-400'}">email</span>
+            <span>${escapeHtml(email)}</span>
+            ${isMaster ? '<span class="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-bold">預設最高管理帳號</span>' : ''}
+          </div>
+          ${!isMaster ? `
+            <button onclick="window.removeEmailFromWhitelist('${email}')" class="text-slate-400 hover:text-red-500" title="移除此授權信箱">
+              <span class="material-icons-outlined text-sm">remove_circle_outline</span>
+            </button>
+          ` : '<span class="text-xs text-slate-300">固定</span>'}
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    window.addEmailToWhitelist = function() {
+      if (!checkPermission()) return;
+      const input = document.getElementById("modal-new-whitelist-email");
+      const email = input.value.trim().toLowerCase();
+      if (!email || !email.includes("@")) {
+        showToast("請輸入正確的電子郵件格式！");
+        return;
+      }
+      if (allowedUsers.includes(email)) {
+        showToast("該信箱已在授權名單中！");
+        return;
+      }
+      allowedUsers.push(email);
+      input.value = "";
+      renderWhitelistContainer();
+      pushToCloud();
+      showToast(`已成功授權：${email}`);
+    };
+
+    window.removeEmailFromWhitelist = function(email) {
+      if (!checkPermission()) return;
+      if (email === PRIMARY_ADMIN_EMAIL) {
+        showToast("不能移除預設最高管理員信箱！");
+        return;
+      }
+      allowedUsers = allowedUsers.filter(e => e !== email);
+      renderWhitelistContainer();
+      pushToCloud();
+      showToast(`已移除信箱授權：${email}`);
+    };
+
+    // --- 負責人名單庫管理邏輯 ---
+    window.openMemberModal = function() {
+      renderMemberList();
+      document.getElementById("modal-member").classList.remove("hidden");
+    };
+
+    window.closeMemberModal = function() {
+      document.getElementById("modal-member").classList.add("hidden");
+      render();
+    };
+
+    function renderMemberList() {
+      const container = document.getElementById("modal-member-list");
+      container.innerHTML = "";
+      if (teamMembers.length === 0) {
+        container.innerHTML = `<p class="text-xs text-slate-400 italic">名單尚無成員，請輸入姓名新增。</p>`;
+        return;
+      }
+      teamMembers.forEach((member, index) => {
+        const item = document.createElement("div");
+        item.className = "flex items-center justify-between px-3 py-2 bg-slate-50 rounded-lg text-xs font-semibold text-slate-700";
+        item.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="material-icons-outlined text-sm text-slate-400">person</span>
+            <span>${escapeHtml(member)}</span>
+          </div>
+          <button onclick="window.removeMember(${index})" class="text-slate-400 hover:text-red-500" title="移除此成員">
+            <span class="material-icons-outlined text-sm">remove_circle_outline</span>
+          </button>
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    window.addMemberFromModal = function() {
+      if (!checkPermission()) return;
+      const input = document.getElementById("modal-new-member-name");
+      const name = input.value.trim();
+      if (!name) return;
+      if (name === "未指定" || teamMembers.includes(name)) {
+        showToast("該名稱已被使用或不合規範！");
+        return;
+      }
+      teamMembers.push(name);
+      input.value = "";
+      renderMemberList();
+      pushToCloud();
+      showToast(`已新增成員：${name}`);
+    };
+
+    window.removeMember = function(index) {
+      if (!checkPermission()) return;
+      const removed = teamMembers.splice(index, 1)[0];
+      projects.forEach(p => {
+        if (p.owner === removed) p.owner = "未指定";
+      });
+      renderMemberList();
+      pushToCloud();
+      showToast(`已移除成員：${removed}`);
+    };
+
+    // --- Firebase 設定彈窗邏輯 ---
+    window.openConfigModal = function() {
+      const stored = localStorage.getItem("PT_FIREBASE_CONFIG") || "";
+      document.getElementById("firebase-config-input").value = stored;
+      document.getElementById("modal-config").classList.remove("hidden");
+    };
+
+    window.closeConfigModal = function() {
+      document.getElementById("modal-config").classList.add("hidden");
+    };
+
+    window.saveFirebaseConfig = function() {
+      const raw = document.getElementById("firebase-config-input").value.trim();
+      if (!raw) {
+        showToast("請輸入有效的 Firebase 配置內容！");
+        return;
+      }
+      try {
+        JSON.parse(raw);
+        localStorage.setItem("PT_FIREBASE_CONFIG", raw);
+        closeConfigModal();
+        showToast("設定已保存，正在重新加載...");
+        setTimeout(() => location.reload(), 800);
+      } catch (e) {
+        showToast("JSON 格式解析錯誤，請確認引號與語法！");
+      }
+    };
+
+    window.clearFirebaseConfig = function() {
+      if (confirm("確認清除 Firebase 設定並重置回本地模式？")) {
+        localStorage.removeItem("PT_FIREBASE_CONFIG");
+        location.reload();
+      }
+    };
+
+    // --- Google 身分驗證觸發器 ---
+    window.handleAuthAction = async function() {
+      if (!auth) {
+        openConfigModal();
+        return;
+      }
+      if (currentUser) {
+        // 登出
+        await signOut(auth);
+        showToast("已成功登出");
+      } else {
+        // Google 登入彈窗
+        const provider = new GoogleAuthProvider();
+        try {
+          const result = await signInWithPopup(auth, provider);
+          showToast(`歡迎登入：${result.user.email}`);
+        } catch (error) {
+          console.error("登入錯誤:", error);
+          showToast("登入已取消或發生錯誤");
+        }
+      }
+    };
+
+    window.setTab = function(tab) {
+      currentTab = tab;
+      const activeBtn = document.getElementById("tab-active");
+      const closedBtn = document.getElementById("tab-closed");
+
+      if (tab === 'active') {
+        activeBtn.className = "px-4 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white shadow-sm transition-all flex items-center gap-2";
+        closedBtn.className = "px-4 py-2 rounded-xl text-sm font-semibold bg-white text-slate-600 hover:bg-slate-100 transition-all border border-slate-200 flex items-center gap-2";
+      } else {
+        closedBtn.className = "px-4 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white shadow-sm transition-all flex items-center gap-2";
+        activeBtn.className = "px-4 py-2 rounded-xl text-sm font-semibold bg-white text-slate-600 hover:bg-slate-100 transition-all border border-slate-200 flex items-center gap-2";
+      }
+      render();
+    };
+
+    function showToast(message) {
+      const toast = document.getElementById("toast-msg");
+      toast.innerText = message;
+      toast.classList.remove("opacity-0", "pointer-events-none", "translate-y-3");
+      toast.classList.add("opacity-100", "translate-y-0");
+      setTimeout(() => {
+        toast.classList.add("opacity-0", "pointer-events-none", "translate-y-3");
+        toast.classList.remove("opacity-100", "translate-y-0");
+      }, 2500);
+    }
+
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    // 將主要通用函式暴露於 window 供 DOM 呼叫
+    window.navigateToDashboard = navigateToDashboard;
+    window.openStandaloneTaskView = openStandaloneTaskView;
+    window.exportSingleProjectCSV = exportSingleProjectCSV;
+    window.printSingleProjectPDF = printSingleProjectPDF;
+
+    // --- DOM 加載就緒 ---
+    document.addEventListener("DOMContentLoaded", () => {
+      loadLocal();
+      initFirebase();
+      window.addEventListener("hashchange", handleHashRouting);
+      handleHashRouting();
+    });
+  </script>
+</body>
+</html>
